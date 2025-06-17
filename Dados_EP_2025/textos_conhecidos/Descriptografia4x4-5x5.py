@@ -1,159 +1,211 @@
-import string
-from itertools import product
-from math import gcd
-from unidecode import unidecode
 import numpy as np
-from numpy.linalg import LinAlgError
+import string
+import unicodedata
+import re
+import random
+import os
+from collections import Counter
 
-# --- Configurações ---
+ALPHABET = string.ascii_uppercase
 MOD = 26
-ALPHABET = string.ascii_lowercase
-ALPHA_MAP = {c: i for i, c in enumerate(ALPHABET)}
-REVERSE_ALPHA_MAP = {i: c for i, c in enumerate(ALPHABET)}
 
-# --- Utilitários ---
-def text_to_numbers(text):
-    return [ALPHA_MAP[c] for c in text.lower() if c in ALPHA_MAP]
+def clean_text(text):
+    return ''.join([c for c in text.upper() if c in ALPHABET])
 
-def numbers_to_text(numbers):
-    return ''.join(REVERSE_ALPHA_MAP[n % MOD] for n in numbers)
+def text_to_vector(text):
+    return [ALPHABET.index(c) for c in text]
 
-def mod_inverse(a, m):
-    for i in range(1, m):
-        if (a * i) % m == 1:
-            return i
+def vector_to_text(vec):
+    return ''.join([ALPHABET[i % 26] for i in vec])
+
+def decrypt_hill(ciphertext, key_matrix):
+    ciphertext = clean_text(ciphertext)
+    while len(ciphertext) % 4 != 0:
+        ciphertext += 'X'
+
+    inv_key = matrix_mod_inv(key_matrix, MOD)
+    if inv_key is None:
+        return None
+
+    plaintext = ""
+    for i in range(0, len(ciphertext), 4):
+        block = np.array(text_to_vector(ciphertext[i:i+4]))
+        decrypted_block = inv_key.dot(block) % MOD
+        plaintext += vector_to_text(decrypted_block)
+
+    return plaintext
+
+def matrix_mod_inv(matrix, mod):
+    try:
+        det = int(round(np.linalg.det(matrix))) % mod
+        det_inv = modinv(det, mod)
+        if det_inv is None:
+            return None
+        adjugate = np.round(det * np.linalg.inv(matrix)).astype(int) % mod
+        return (det_inv * adjugate) % mod
+    except:
+        return None
+
+def modinv(a, m):
+    a = a % m
+    for x in range(1, m):
+        if (a * x) % m == 1:
+            return x
     return None
 
-def matrix_inverse(matrix, mod=MOD):
-    det = round(np.linalg.det(matrix)) % mod
-    if gcd(det, mod) != 1:
-        return None
-    det_inv = mod_inverse(det, mod)
-    if det_inv is None:
-        return None
-    try:
-        adj = np.round(np.linalg.inv(matrix) * det).astype(int) % mod
-        inv = (det_inv * adj) % mod
-        return inv.tolist()
-    except LinAlgError:
-        return None
+def generate_random_invertible_4x4_matrices(qtd=1000):
+    matrices = []
+    chaves_str = set()
+    tentativas = 0
+    while len(matrices) < qtd and tentativas < qtd * 10:
+        mat = np.random.randint(0, 26, size=(4, 4))
+        det = int(round(np.linalg.det(mat))) % 26
+        if det != 0 and modinv(det, 26) is not None:
+            chave_str = matriz_para_str(mat)
+            if chave_str not in chaves_str:
+                matrices.append(mat)
+                chaves_str.add(chave_str)
+        tentativas += 1
+    return matrices
 
-def montar_blocos(vetor, tamanho):
-    return [vetor[i:i+tamanho] for i in range(0, len(vetor), tamanho)]
 
-def multiplicar_matriz(A, B, mod=MOD):
-    return [[sum(A[i][k] * B[k][j] for k in range(len(B))) % mod
-             for j in range(len(B[0]))] for i in range(len(A))]
-
-# --- Nova heurística baseada em frequência ---
-# Frequências médias das letras no português (fonte: https://pt.wikipedia.org/wiki/Frequ%C3%AAncia_de_letras)
-FREQ_PT = {
-    'a': 0.1463, 'b': 0.0104, 'c': 0.0388, 'd': 0.0499, 'e': 0.1257,
-    'f': 0.0102, 'g': 0.0130, 'h': 0.0078, 'i': 0.0618, 'j': 0.0040,
-    'k': 0.0002, 'l': 0.0278, 'm': 0.0474, 'n': 0.0505, 'o': 0.1073,
-    'p': 0.0252, 'q': 0.0120, 'r': 0.0653, 's': 0.0781, 't': 0.0434,
-    'u': 0.0463, 'v': 0.0167, 'w': 0.0001, 'x': 0.0020, 'y': 0.0001,
-    'z': 0.0047
-}
-
-def score_texto(texto):
-    """Calcula uma pontuação de quão parecido o texto está com português,
-    baseada na frequência das letras."""
-    if not texto:
-        return 0
-    total = len(texto)
-    contagem = {c: 0 for c in ALPHABET}
-    for c in texto:
-        if c in contagem:
-            contagem[c] += 1
-    score = 0
-    for letra, freq_esperada in FREQ_PT.items():
-        freq_texto = contagem[letra] / total
-        score += (freq_texto - freq_esperada)**2
-    # Score menor = mais parecido (distância quadrática)
-    return -score  # para ordenar decrescente (maior é melhor)
-
-# --- Funções principais ---
-def carregar_texto_base(path):
-    with open(path, 'r', encoding='latin-1') as f:
-        texto = f.read()
-    texto = unidecode(texto.lower())
-    return ''.join(c for c in texto if c in ALPHA_MAP)
-
-def tentar_chaves(texto_claro, texto_cifrado, tamanho_chave, max_resultados=10):
-    texto_cifrado_numeros = text_to_numbers(texto_cifrado)
-    bloco_tamanho = tamanho_chave * tamanho_chave
-    melhores_resultados = []
-
-    # Agora varremos posições do texto claro e cifrado
-    for i in range(0, len(texto_claro) - bloco_tamanho + 1):
-        trecho_claro = text_to_numbers(texto_claro[i:i+bloco_tamanho])
-        if len(trecho_claro) != bloco_tamanho:
-            continue
-        P = montar_blocos(trecho_claro, tamanho_chave)
-        Pinv = matrix_inverse(P)
-        if Pinv is None:
-            continue
-
-        for j in range(0, len(texto_cifrado_numeros) - bloco_tamanho + 1):
-            trecho_cifrado = texto_cifrado_numeros[j:j+bloco_tamanho]
-            if len(trecho_cifrado) != bloco_tamanho:
-                continue
-            C = montar_blocos(trecho_cifrado, tamanho_chave)
-
-            try:
-                K = multiplicar_matriz(C, Pinv)
-
-                # Decifragem de todo o texto cifrado usando K
-                blocos_cif = montar_blocos(texto_cifrado_numeros, tamanho_chave)
-                texto_decifrado = []
-                for bloco in blocos_cif:
-                    if len(bloco) < tamanho_chave:
-                        bloco += [0] * (tamanho_chave - len(bloco))
-                    resultado = multiplicar_matriz(K, [[x] for x in bloco])
-                    texto_decifrado.extend([linha[0] for linha in resultado])
-                texto_final = numbers_to_text(texto_decifrado)
-
-                # Nova heurística
-                s = score_texto(texto_final)
-                if s > -0.02:  # Ajuste esse limite conforme necessário
-                    melhores_resultados.append((i, j, K, texto_final[:300], s))
-
-            except Exception:
-                continue
-
-            if len(melhores_resultados) >= max_resultados:
+def segmentar_texto(texto, vocab):
+    texto = texto.upper()
+    i = 0
+    palavras = []
+    while i < len(texto):
+        encontrada = False
+        for j in range(min(len(texto), i + 15), i + 2, -1):
+            palavra = texto[i:j]
+            if palavra in vocab:
+                palavras.append(palavra)
+                i = j
+                encontrada = True
                 break
-        if len(melhores_resultados) >= max_resultados:
-            break
+        if not encontrada:
+            i += 1
+    return palavras
 
-    # Ordena pelos scores melhores (maiores)
-    melhores_resultados.sort(key=lambda x: x[4], reverse=True)
-    return melhores_resultados
+def vogal_bonus(text):
+    vogais = set("AEIOU")
+    total = len(text)
+    if total == 0:
+        return 0
+    num_vogais = sum(1 for c in text if c in vogais)
+    proporcao = num_vogais / total
+    return int(proporcao * 100)
 
-# --- Execução ---
-if __name__ == '__main__':
-    cifra = 'gaigmwrcbgzczweanigkdctvdjeczwnnxwxecfqvgqoclxxniyckxfuapigubwvgasrubgxahtobwcckxfuajoeuzevgsarbezapcotakylekauewhygieiu'
+def count_vocab_matches(text, vocab_freq, original_ciphertext):
+    palavras = segmentar_texto(text, vocab_freq)
+    contagem = Counter(palavras)
+    score = 0
 
-    texto_base = carregar_texto_base('avesso_da_pele.txt')
-    print(f"✅ Texto base carregado com {len(texto_base)} caracteres")
+    for palavra, freq in contagem.items():
+        # Só contabiliza se a palavra está no vocab (já está, pois segmentar_texto filtra)
+        # Bônus se a palavra está no ciphertext original
+        bonus = 10 if palavra in original_ciphertext else 0
+        
+        # Score valoriza palavras maiores com peso quadrático no tamanho * frequência + bônus
+        score += (len(palavra) ** 2) * vocab_freq.get(palavra, 1) + bonus
 
-    with open('resultados_chave.txt', 'w', encoding='utf-8') as f_res:
-        for tamanho in [4, 5]:
-            print(f"\n🔍 Tentando descobrir chave {tamanho}x{tamanho}...")
-            resultados = tentar_chaves(texto_base, cifra, tamanho)
+    # Bônus de vogais na palavra
+    score += vogal_bonus(text)
 
-            if resultados:
-                for idx, (pos_claro, pos_cif, chave, preview, score) in enumerate(resultados):
-                    print(f"\n#{idx + 1} 🔑 Posição texto claro: {pos_claro}, texto cifrado: {pos_cif} | Score: {score:.6f}")
-                    for linha in chave:
-                        print(linha)
-                    print(f"📜 Preview do texto decifrado: {preview[:200]}...\n")
+    return score
 
-                    # Grava no arquivo resultados
-                    f_res.write(f"#{idx + 1} Posição texto claro: {pos_claro}, texto cifrado: {pos_cif} | Score: {score:.6f}\n")
-                    for linha in chave:
-                        f_res.write(str(linha) + '\n')
-                    f_res.write(f"Preview: {preview}\n\n")
-            else:
-                print("❌ Nenhuma chave plausível encontrada.")
+
+
+
+def salvar_matriz(nome_arquivo, matriz):
+    with open(nome_arquivo, "a") as f:
+        flat = ','.join(map(str, matriz.flatten()))
+        f.write(flat + "\n")
+
+def carregar_matrizes(nome_arquivo):
+    if not os.path.exists(nome_arquivo):
+        return set()
+    with open(nome_arquivo, "r") as f:
+        return set(line.strip() for line in f.readlines())
+
+def matriz_para_str(matriz):
+    return ','.join(map(str, matriz.flatten()))
+
+def break_hill_with_vocab(ciphertext, vocab_freq, max_matrices=10000):
+    ciphertext = clean_text(ciphertext)
+    best_score = float('-inf')
+    best_plain = ""
+    best_key = None
+
+    ruins = carregar_matrizes("matrizes_ruins.txt")
+    boas = carregar_matrizes("matrizes_boas.txt")
+    print(f"Gerando e testando até {max_matrices} matrizes 4x4 invertíveis...")
+
+    matrices = generate_random_invertible_4x4_matrices(max_matrices)
+
+    melhores_chaves = set()
+    melhores_textos = set()
+
+    for i, key in enumerate(matrices):
+        key_str = matriz_para_str(key)
+        if key_str in ruins or key_str in boas:
+            continue
+
+        plain = decrypt_hill(ciphertext, key)
+        if plain is None:
+            continue
+
+        if plain.count('W') > 1 or plain.count('Y') > 1 or plain.count('K') > 2:
+            salvar_matriz("matrizes_ruins.txt", key)
+            continue
+
+        score = count_vocab_matches(plain, vocab_freq, ciphertext)
+
+        if score == 0:
+            salvar_matriz("matrizes_ruins.txt", key)
+        else:
+            salvar_matriz("matrizes_boas.txt", key)
+
+        # Só atualiza se o score for melhor e a chave e texto ainda não foram usados
+        if score > best_score and key_str not in melhores_chaves and plain not in melhores_textos:
+            best_score = score
+            best_plain = plain
+            best_key = key
+            melhores_chaves.add(key_str)
+            melhores_textos.add(plain)
+
+        if i % 100 == 0:
+            print(best_plain[:100])
+            print(f"{i} matrizes testadas... Melhor score até agora: {best_score}")
+
+    return best_key, best_plain
+
+
+def carregar_vocabulario_com_frequencia(caminho_arquivo):
+    with open(caminho_arquivo, 'r', encoding='latin-1') as f:
+        texto = f.read()
+
+    texto = unicodedata.normalize('NFD', texto)
+    texto = texto.encode('ascii', 'ignore').decode('latin-1')
+
+    palavras = re.findall(r'\b[a-zA-Z]{3,}\b', texto)
+    palavras = [p.upper() for p in palavras]
+
+    contagem = Counter(palavras)
+    return dict(contagem)  # retorna dicionário palavra->frequência
+
+if __name__ == "__main__":
+    ciphertext = "gaigmwrcbgzczweanigkdctvdjeczwnnxwxecfqvgqoclxxniyckxfuapigubwvgasrubgxahtobwcckxfuajoeuzevgsarbezapcotakylekauewhygieiu"
+
+    vocab_freq = carregar_vocabulario_com_frequencia("avesso_da_pele.txt")
+    print(f"Vocabulário carregado com {len(vocab_freq)} palavras.")
+    print(vocab_freq)
+    key, plain = break_hill_with_vocab(ciphertext, vocab_freq, max_matrices=3000000)
+
+    print("\nMelhor matriz chave encontrada:")
+    print(key)
+    print("\nTexto decriptado:")
+    print(plain)
+
+    print("\nPalavras segmentadas encontradas:")
+    palavras = segmentar_texto(plain, vocab_freq)
+    print(palavras)

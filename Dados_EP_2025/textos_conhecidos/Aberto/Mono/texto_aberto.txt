@@ -1,0 +1,3 @@
+Chave (cifrado → claro): afzvbntieugcdqhjmskwlroxpy
+Chave (claro → cifrado): aelmibkohpsuqfwynvrgjdtxzc
+Texto decifrado: emqueriamuitofazerjudomassuafamilianaotinhadinheiroparatepagarumasaulaseoquimonoeracaroalemdissonaepocasuamaetinhavoltad
